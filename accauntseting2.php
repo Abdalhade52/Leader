@@ -1,36 +1,3 @@
-<form  method="post" action="accauntseting.php">
-    <h2> تحديث معلومات الحساب</h2>
-        <lable> البريد الالكتروني الجديد</lable>
-<input type="email"   id="email"   name="email" required >
-<label> كلمة المرور الجديدة</label>
-<input type="password"  id="password" name="password" required>
-<button type="submit"> حفظ التغيرات</button>
-</form>
-
-<style>
-form {
-    width: 300px;
-    margin: 40px auto;
-    padding: 20px;
-    background: #f3f3f3;
-    border-radius: 10px;
-    font-family: Arial;
-}
-input, button {
-    width: 100%;
-    padding: 10px;
-    margin-top: 10px;
-}
-button {
-    background: #007bff;
-    color: white;
-    border: none;
-    cursor: pointer;
-}
-button:hover {
-    background: #0056b3;
-}
-</style>
-
-
+<?php
+require __DIR__.'/app.php';require_login();$passwordError='';$successMessage='';if(($_SERVER['REQUEST_METHOD']??'GET')==='POST'){if(!hash_equals(csrf_token(),(string)($_POST['csrf_token']??''))){http_response_code(403);exit;}$currentPassword=(string)($_POST['current_password']??'');$newPassword=(string)($_POST['new_password']??'');$userStatement=db()->prepare('SELECT password_hash FROM users WHERE id=? AND shop_id=?');$userStatement->execute([(int)$_SESSION['user_id'],(int)$_SESSION['shop_id']]);$userRecord=$userStatement->fetch();if(!$userRecord||!password_verify($currentPassword,$userRecord['password_hash']))$passwordError='كلمة المرور الحالية غير صحيحة.';elseif(strlen($newPassword)<12)$passwordError='كلمة المرور الجديدة يجب أن تكون 12 حرفًا على الأقل.';else{$userStatement=db()->prepare('UPDATE users SET password_hash=? WHERE id=? AND shop_id=?');$userStatement->execute([password_hash($newPassword,PASSWORD_DEFAULT),(int)$_SESSION['user_id'],(int)$_SESSION['shop_id']]);session_regenerate_id(true);$successMessage='تم تغيير كلمة المرور.';}}page_start('إعدادات الحساب');if($passwordError)echo '<p class="alert">'.e($passwordError).'</p>';if($successMessage)echo '<p class="success">'.e($successMessage).'</p>';echo '<section class="card narrow"><form method="post">'.csrf_field().'<label>كلمة المرور الحالية<input type="password" name="current_password" autocomplete="current-password" required></label><label>كلمة المرور الجديدة<input type="password" name="new_password" minlength="12" autocomplete="new-password" required></label><button>تغيير كلمة المرور</button></form></section>';page_end();
 

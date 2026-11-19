@@ -1,50 +1,6 @@
 <?php
-$host="localhost";    //متغيرات الاتصال بقاعدة البيانات
-$user="root";
-$pass="";
-$db="branches";
-$conn=new mysqli($host,$user,$pass,$db);//يتم انشاء اتصال بقاعدة البيانات باستخدام كلاس اسمهmysqli
-if($conn->connect_error){//هنا يتم التحقق اذا الاتصال فشل
-    die("error in the date base");//تظهر الرسالة اذا فشل الاتصال
-}
-$search=isset($_GET['search'])?$_GET['search']:"";//searchاستقبال اذا المستخدم كتب شئ في 
-$sort=isset($_GET['sort'])?$_GET['sort']:"export_date";//نحدد طريقة الترتيب
-$allowedsort=["export_date","branch_name"];//نحدد الاعمدة المسموح ترتيبها
-if(!in_array($sort,$allowedsort)){//شرط يمنع المستخدم اذا حاول ادخال غير مرغوب بها
-$sort="export_date";
-}
-
-$sql="SELECT * FROM exports WHERE branch_name LIKE '%$search%' ORDER BY $sort DESC";//اختيار كل البيانات من الجدول وترتيب النتائج 
-$result=$conn->query($sql);//يتم ارسال الاستعلام الى sql
-if(!$result){//اذا حدث خطا في sqlيتم عرض الخطا الحقيقي
-die(" error in the sql :".$conn->error);
-
-}
-
-?>
-<?php
-$host="localhost";
-$user="root";
-$pass="";
-$bd="branches";
-$conn= new mysqli($host,$user,$pass,$db);
-if($conn->connect_error){
-    die("error in the date base");
-}
-if(isset($_POST['add'])){
-    $branch=$_POST['branch_name'];
-    $date=$_POST['export_date'];
-    $sql="INSERT INTO exports (branch_name,export_date) VALUES('$branch','$date')";
-}
-if($conn->query($sql)){
-    echo"تمت الاضافة";
-}else{
-    echo"error in the sql".$conn->error;
-}
-?>
-<form method="post">
-    <input type="text" name="branch_name" placeholder="اسم الفرع" required>
-    <input type="date" name="export_date" required>
-    <button type="submit" name="add"> اضافة</button>
-</form>
+require __DIR__.'/app.php';require_login();$shopId=(int)$_SESSION['shop_id'];$currentRole=current_role();$canViewAllBranches=in_array($currentRole,['owner','company_manager'],true);
+if(($_SERVER['REQUEST_METHOD']??'GET')==='POST'){verify_csrf();$branchId=filter_var($_POST['branch_id']??null,FILTER_VALIDATE_INT);$productId=filter_var($_POST['product_id']??null,FILTER_VALIDATE_INT);$exportQuantity=filter_var($_POST['quantity']??null,FILTER_VALIDATE_FLOAT);$exportDate=(string)($_POST['export_date']??'');if(!$branchId||!$productId||!$exportQuantity||$exportQuantity<=0||!preg_match('/^\d{4}-\d{2}-\d{2}$/',$exportDate)||!validate_branch($branchId)){http_response_code(422);exit('الفرع أو بيانات التوزيع غير صالحة.');}$database=db();try{$database->beginTransaction();$query=$database->prepare('SELECT quantity FROM products WHERE id=? AND shop_id=? FOR UPDATE');$query->execute([$productId,$shopId]);$productRecord=$query->fetch();if(!$productRecord||(float)$productRecord['quantity']<$exportQuantity)throw new RuntimeException('المخزون غير كافٍ.');$query=$database->prepare('UPDATE products SET quantity=quantity-? WHERE id=? AND shop_id=?');$query->execute([$exportQuantity,$productId,$shopId]);$query=$database->prepare('INSERT INTO exports(shop_id,branch_id,product_id,quantity,export_date) VALUES(?,?,?,?,?)');$query->execute([$shopId,$branchId,$productId,$exportQuantity,$exportDate]);$database->commit();header('Location: exports.php?saved=1');exit;}catch(Throwable $caughtError){if($database->inTransaction())$database->rollBack();$exportError=$caughtError instanceof RuntimeException?$caughtError->getMessage():'تعذر تسجيل التوزيع.';}}
+if($canViewAllBranches){$query=db()->prepare('SELECT id,name FROM branches WHERE shop_id=? ORDER BY name');$query->execute([$shopId]);}else{$query=db()->prepare('SELECT id,name FROM branches WHERE shop_id=? AND id=?');$query->execute([$shopId,(int)($_SESSION['branch_id']??0)]);}$branchOptions=$query->fetchAll();$query=db()->prepare('SELECT id,name,quantity FROM products WHERE shop_id=? ORDER BY name');$query->execute([$shopId]);$productOptions=$query->fetchAll();$exportHistorySql='SELECT b.name branch,p.name product,x.quantity,x.export_date FROM exports x JOIN branches b ON b.id=x.branch_id AND b.shop_id=x.shop_id JOIN products p ON p.id=x.product_id AND p.shop_id=x.shop_id WHERE x.shop_id=?'.($canViewAllBranches?'':' AND x.branch_id=?').' ORDER BY x.export_date DESC,x.id DESC';$query=db()->prepare($exportHistorySql);$canViewAllBranches?$query->execute([$shopId]):$query->execute([$shopId,(int)($_SESSION['branch_id']??0)]);$exportRows=$query->fetchAll();
+page_start('حركة التوزيع');if(isset($_GET['saved']))echo '<p class="success">تم تسجيل الحركة وتحديث المخزون.</p>';if(!empty($exportError))echo '<p class="alert">'.e($exportError).'</p>';echo '<section class="card"><form method="post">'.csrf_field().'<div class="grid"><label>الفرع<select name="branch_id" required>';foreach($branchOptions as $branch)echo '<option value="'.(int)$branch['id'].'">'.e($branch['name']).'</option>';echo '</select></label><label>الصنف<select name="product_id" required>';foreach($productOptions as $productOption)echo '<option value="'.(int)$productOption['id'].'">'.e($productOption['name']).' ('.e($productOption['quantity']).')</option>';echo '</select></label><label>الكمية<input type="number" name="quantity" min=".01" step=".01" required></label><label>التاريخ<input type="date" name="export_date" value="'.e(date('Y-m-d')).'" required></label></div><button>تسجيل التوزيع</button></form></section><section class="card table-wrap"><table><thead><tr><th>الفرع</th><th>الصنف</th><th>الكمية</th><th>التاريخ</th></tr></thead><tbody>';foreach($exportRows as $exportRow)echo '<tr><td>'.e($exportRow['branch']).'</td><td>'.e($exportRow['product']).'</td><td>'.e($exportRow['quantity']).'</td><td>'.e($exportRow['export_date']).'</td></tr>';if(!$exportRows)echo '<tr><td colspan="4">لا توجد حركات.</td></tr>';echo '</tbody></table></section>';page_end();
 

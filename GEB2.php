@@ -1,245 +1,155 @@
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-<meta charset="UTF-8">
-<title>إضافة بيانات الأصناف المستوردة</title>
+<?php
+require __DIR__ . '/app.php';
+require_login();
 
-<style>
-    body {
-        font-family: Tahoma, sans-serif;
-        background: #eef1f7;
-        padding: 0;
-        margin: 0;
+$shopId = (int) $_SESSION['shop_id'];
+$canManageInventory = in_array(current_role(), ['owner', 'company_manager'], true);
+$saveError = '';
+
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+    require_roles(['owner', 'company_manager']);
+    verify_csrf();
+
+    $itemCode = trim((string) ($_POST['itemcode'] ?? ''));
+    $itemName = trim((string) ($_POST['itemname'] ?? ''));
+    $itemCategory = trim((string) ($_POST['category'] ?? ''));
+    $itemUnit = (string) ($_POST['unit'] ?? 'قطعة');
+    $itemQuantity = filter_var($_POST['quantity'] ?? null, FILTER_VALIDATE_FLOAT);
+    $minimumQuantity = filter_var($_POST['min_quantity'] ?? null, FILTER_VALIDATE_FLOAT);
+    $costPrice = filter_var($_POST['costprice'] ?? null, FILTER_VALIDATE_FLOAT);
+    $sellPrice = filter_var($_POST['sellprice'] ?? null, FILTER_VALIDATE_FLOAT);
+    $expiryDate = (string) ($_POST['expiry_date'] ?? '');
+
+    $isValidProduct = $itemCode !== ''
+        && $itemName !== ''
+        && $itemQuantity !== false && $itemQuantity >= 0
+        && $minimumQuantity !== false && $minimumQuantity >= 0
+        && $costPrice !== false && $costPrice >= 0
+        && $sellPrice !== false && $sellPrice >= 0
+        && in_array($itemUnit, ['قطعة', 'كرتون', 'كيلو', 'لتر'], true);
+
+    if (!$isValidProduct) {
+        http_response_code(422);
+        exit('بيانات الصنف غير صالحة.');
     }
 
-    /* Header */
-    header {
-        background: #0d6efd;
-        color: #fff;
-        padding: 18px;
-        text-align: center;
-        font-size: 22px;
-        font-weight: bold;
-        letter-spacing: 1px;
+    try {
+        $insertProductStatement = db()->prepare(
+            'INSERT INTO products
+                (shop_id, item_code, name, category, unit, quantity, min_quantity, cost_price, sell_price, expiry_date)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        $insertProductStatement->execute([
+            $shopId, $itemCode, $itemName, $itemCategory, $itemUnit,
+            $itemQuantity, $minimumQuantity, $costPrice, $sellPrice,
+            $expiryDate !== '' ? $expiryDate : null,
+        ]);
+        header('Location: GEB2.php?saved=1');
+        exit;
+    } catch (PDOException $databaseException) {
+        $saveError = 'تعذر حفظ الصنف، تحقق من الكود.';
     }
+}
 
-    /* Navbar */
-    nav {
-        background: #1f1f1f;
-        padding: 12px 20px;
-        display: flex;
-        justify-content: center;
-        gap: 25px;
-    }
+$searchTerm = trim((string) ($_GET['q'] ?? ''));
+$inventoryFilter = (string) ($_GET['status'] ?? 'all');
+$validInventoryFilters = ['all', 'low', 'out', 'expired', 'expiring'];
+if (!in_array($inventoryFilter, $validInventoryFilters, true)) {
+    $inventoryFilter = 'all';
+}
 
-    nav a {
-        color: #fff;
-        text-decoration: none;
-        font-size: 16px;
-        font-weight: bold;
-        transition: 0.3s;
-    }
+$inventoryConditions = ['shop_id = ?'];
+$inventoryParameters = [$shopId];
+if ($searchTerm !== '') {
+    $inventoryConditions[] = '(item_code LIKE ? OR name LIKE ? OR category LIKE ?)';
+    $searchPattern = '%' . $searchTerm . '%';
+    array_push($inventoryParameters, $searchPattern, $searchPattern, $searchPattern);
+}
+switch ($inventoryFilter) {
+    case 'low': $inventoryConditions[] = 'quantity <= min_quantity'; break;
+    case 'out': $inventoryConditions[] = 'quantity = 0'; break;
+    case 'expired': $inventoryConditions[] = 'expiry_date < CURDATE()'; break;
+    case 'expiring': $inventoryConditions[] = 'expiry_date >= CURDATE() AND expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)'; break;
+}
 
-    nav a:hover {
-        color: #0d6efd;
-    }
+$inventorySql = 'SELECT item_code, name, category, unit, quantity, min_quantity,
+        cost_price, sell_price, expiry_date
+    FROM products WHERE ' . implode(' AND ', $inventoryConditions)
+    . ' ORDER BY (quantity <= min_quantity) DESC, expiry_date IS NULL, expiry_date, name';
+$inventoryStatement = db()->prepare($inventorySql);
+$inventoryStatement->execute($inventoryParameters);
+$products = $inventoryStatement->fetchAll();
 
-    /* Main Container */
-    .container {
-        width: 100%;
-        max-width: 600px;
-        background: #fff;
-        padding: 25px;
-        border-radius: 12px;
-        box-shadow: 0 0 20px rgba(0,0,0,0.1);
-        margin: 40px auto;
-    }
+page_start('المخزون');
+if (isset($_GET['saved'])) echo '<p class="success">تم حفظ الصنف بنجاح.</p>';
+if ($saveError !== '') echo '<p class="alert">' . e($saveError) . '</p>';
+?>
+<section class="page-intro">
+    <div><span class="eyebrow">إدارة الأصناف</span><p>تابع الرصيد وحد إعادة الطلب وتواريخ الصلاحية.</p></div>
+</section>
 
-    h3 {
-        text-align: center;
-        color: #0d6efd;
-        margin-bottom: 20px;
-    }
+<?php if ($canManageInventory): ?>
+<details class="panel add-product-panel">
+    <summary><span>إضافة صنف جديد</span><span class="summary-hint">افتح النموذج</span></summary>
+    <form method="post" class="form-grid">
+        <?= csrf_field() ?>
+        <label>كود الصنف<input name="itemcode" required maxlength="80"></label>
+        <label>اسم الصنف<input name="itemname" required maxlength="160"></label>
+        <label>التصنيف<input name="category" maxlength="120"></label>
+        <label>الوحدة<select name="unit"><option>قطعة</option><option>كرتون</option><option>كيلو</option><option>لتر</option></select></label>
+        <label>الكمية الحالية<input type="number" name="quantity" min="0" step=".01" value="0" required></label>
+        <label>حد إعادة الطلب<input type="number" name="min_quantity" min="0" step=".01" value="0" required></label>
+        <label>سعر التكلفة<input type="number" name="costprice" min="0" step=".01" value="0" required></label>
+        <label>سعر البيع<input type="number" name="sellprice" min="0" step=".01" value="0" required></label>
+        <label>تاريخ الانتهاء<input type="date" name="expiry_date"></label>
+        <div class="form-actions"><button type="submit">حفظ الصنف</button></div>
+    </form>
+</details>
+<?php endif; ?>
 
-    label {
-        display: block;
-        margin-top: 12px;
-        font-weight: bold;
-    }
-
-    input, select {
-        width: 100%;
-        padding: 10px;
-        margin-top: 5px;
-        border: 1px solid #ccc;
-        border-radius: 8px;
-        outline: none;
-        transition: 0.3s;
-    }
-
-    input:focus, select:focus {
-        border-color: #0d6efd;
-    }
-
-    button {
-        width: 100%;
-        padding: 12px;
-        background: #0d6efd;
-        color: #fff;
-        border: none;
-        border-radius: 8px;
-        margin-top: 20px;
-        cursor: pointer;
-        font-size: 16px;
-    }
-
-    button:hover {
-        background: #0b5ed7;
-    }
-
-    .btn-link {
-        margin-top: 20px;
-        display: block;
-        text-align: center;
-        background: #198754;
-        padding: 12px;
-        color: #fff;
-        border-radius: 8px;
-        text-decoration: none;
-    }
-
-    .btn-link:hover {
-        background: #146c43;
-    }
-
-    /* Footer */
-    footer {
-        background: #1f1f1f;
-        color: #fff;
-        text-align: center;
-        padding: 12px;
-        margin-top: 40px;
-        font-size: 14px;
-    }
-</style>
-</head>
-
-<body>
-
-<!-- Header -->
-<header>
-    نظام إدارة الأصناف المستوردة
-</header>
-
-<!-- Navbar -->
-<nav>
-    <a href="imported.php">الرئيسية</a>
-    <a href="Distribution location.php">مواقع التوزيع</a>
-    <a href="branches.php">الفروع</a>
-    <a href="login.php">تسجيل الخروج</a>
-</nav>
-
-<!-- Main Content -->
-<div class="container">
-    <h3>إضافة بيانات الأصناف المستوردة</h3>
-
-    <form action="" method="POST">
-
-        <label>كود الصنف:</label>
-        <input type="text" name="itemcode" required>
-
-        <label>اسم الصنف:</label>
-        <input type="text" name="itemname" required>
-
-        <label>التصنيف:</label>
-        <input type="text" name="category">
-
-        <label>وحدة القياس:</label>
-        <select name="unit">
-            <option value="قطعة">قطعة</option>
-            <option value="كرتون">كرتون</option>
-            <option value="كيلو">كيلو</option>
-            <option value="لتر">لتر</option>
-        </select>
-
-        <label>الكمية المتاحة:</label>
-        <input type="number" name="quantity" min="0">
-
-        <label>سعر التكلفة:</label>
-        <input type="number" name="costprice" step="0.01">
-
-        <label>سعر البيع:</label>
-        <input type="number" name="sellprice" step="0.01">
-
-        <label>تاريخ الانتهاء:</label>
-        <input type="date" name="importeddate">
-
-        <button type="submit">حفظ الصنف</button>
+<section class="panel inventory-panel">
+    <div class="panel-heading">
+        <div><span class="eyebrow">كتالوج المنشأة</span><h2>الأصناف <span class="result-count"><?= e(count($products)) ?></span></h2></div>
+    </div>
+    <form method="get" class="inventory-toolbar">
+        <label class="search-field">بحث<input type="search" name="q" value="<?= e($searchTerm) ?>" placeholder="اسم الصنف أو الكود أو التصنيف"></label>
+        <label>تصفية الحالة
+            <select name="status">
+                <option value="all" <?= $inventoryFilter === 'all' ? 'selected' : '' ?>>كل الأصناف</option>
+                <option value="low" <?= $inventoryFilter === 'low' ? 'selected' : '' ?>>أقل من حد إعادة الطلب</option>
+                <option value="out" <?= $inventoryFilter === 'out' ? 'selected' : '' ?>>نفد المخزون</option>
+                <option value="expired" <?= $inventoryFilter === 'expired' ? 'selected' : '' ?>>منتهي الصلاحية</option>
+                <option value="expiring" <?= $inventoryFilter === 'expiring' ? 'selected' : '' ?>>ينتهي خلال 30 يومًا</option>
+            </select>
+        </label>
+        <button type="submit" class="button-secondary">تطبيق</button>
+        <a class="clear-filter" href="GEB2.php">مسح التصفية</a>
     </form>
 
-    <a href="Distribution location.php" class="btn-link">مواقع التوزيع</a>
-</div>
-
-<!-- Footer -->
-<footer>
-    © 2026 جميع الحقوق محفوظة — نظام إدارة المخزون
-</footer>
-
-</body>
-</html>
-
-
-<?php
-// اتصال بقاعدة البيانات
-$conn = new mysqli("localhost", "root", "", "inventory_system");
-
-if ($conn->connect_error) {
-    die("فشل الاتصال: " . $conn->connect_error);
-}
-
-// حفظ البيانات
-if ($_SERVER["REQUEST_METHOD"] == "POST") {
-
-    $quantity = $_POST['quantity'];
-    $costprice = $_POST['costprice'];
-    $sellprice = $_POST['sellprice'];
-    $importeddate = $_POST['importeddate'];
-
-    $sql = "INSERT INTO imported (quantity, costprice, sellprice, importeddate)
-            VALUES ('$quantity', '$costprice', '$sellprice', '$importeddate')";
-
-    if ($conn->query($sql) === TRUE) {
-        echo "<p style='color:green; text-align:center; margin-top:20px;'>تم حفظ البيانات بنجاح ✔</p>";
-    } else {
-        echo "<p style='color:red; text-align:center;'>خطأ: " . $conn->error . "</p>";
-    }
-}
-
-// عرض البيانات
-$result = $conn->query("SELECT * FROM imported");
-
-if ($result->num_rows > 0) {
-    echo "<table>";
-    echo "<tr>
-            <th>الكمية</th>
-            <th>سعر التكلفة</th>
-            <th>سعر البيع</th>
-            <th>تاريخ الانتهاء</th>
-          </tr>";
-
-    while ($row = $result->fetch_assoc()) {
-        echo "<tr>
-                <td>".$row['quantity']."</td>
-                <td>".$row['costprice']."</td>
-                <td>".$row['sellprice']."</td>
-                <td>".$row['importeddate']."</td>
-              </tr>";
-    }
-
-    echo "</table>";
-} else {
-    echo "<p style='text-align:center; margin-top:20px;'>لا توجد بيانات لعرضها.</p>";
-}
-?>
-</body>
-</html>
+    <div class="table-wrap">
+        <table class="inventory-table">
+            <thead><tr><th>الصنف</th><th>التصنيف</th><th>الرصيد</th><th>حد الطلب</th><?php if ($canManageInventory): ?><th>التكلفة</th><th>البيع</th><?php endif; ?><th>الصلاحية</th><th>الحالة</th></tr></thead>
+            <tbody>
+            <?php foreach ($products as $product):
+                $isLowStock = (float) $product['quantity'] <= (float) $product['min_quantity'];
+                $isExpired = $product['expiry_date'] !== null && $product['expiry_date'] < date('Y-m-d');
+                $isExpiringSoon = $product['expiry_date'] !== null
+                    && $product['expiry_date'] >= date('Y-m-d')
+                    && $product['expiry_date'] <= date('Y-m-d', strtotime('+30 days'));
+            ?>
+                <tr>
+                    <td><strong><?= e($product['name']) ?></strong><small class="table-subtext"><?= e($product['item_code']) ?></small></td>
+                    <td><?= e($product['category'] !== '' ? $product['category'] : '—') ?></td>
+                    <td class="numeric-cell"><?= e($product['quantity']) ?> <small><?= e($product['unit']) ?></small></td>
+                    <td><?= e($product['min_quantity']) ?></td>
+                    <?php if ($canManageInventory): ?><td><?= e(number_format((float) $product['cost_price'], 2)) ?></td><td><?= e(number_format((float) $product['sell_price'], 2)) ?></td><?php endif; ?>
+                    <td><?= e($product['expiry_date'] ?? '—') ?></td>
+                    <td><?php if ($isExpired): ?><span class="status-pill status-expired">منتهي</span><?php elseif ($isLowStock): ?><span class="status-pill status-low">مخزون منخفض</span><?php elseif ($isExpiringSoon): ?><span class="status-pill status-expiring">قرب الانتهاء</span><?php else: ?><span class="status-pill status-ok">متوفر</span><?php endif; ?></td>
+                </tr>
+            <?php endforeach; ?>
+            <?php if (!$products): ?><tr><td colspan="<?= $canManageInventory ? '8' : '6' ?>" class="empty-cell">لا توجد أصناف تطابق البحث أو التصفية.</td></tr><?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+</section>
+<?php page_end(); ?>
